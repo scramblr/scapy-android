@@ -11,10 +11,11 @@ configuration of the machine.
 import socket
 import struct
 import time
+from fcntl import ioctl
 
 import scapy.utils6
 
-from scapy.consts import BIG_ENDIAN
+from scapy.consts import ANDROID, BIG_ENDIAN
 from scapy.config import conf
 from scapy.error import log_loading
 from scapy.packet import (
@@ -29,6 +30,7 @@ from scapy.fields import (
     EnumField,
     Field,
     FieldLenField,
+    FlagValue,
     FlagsField,
     IP6Field,
     IPField,
@@ -700,6 +702,7 @@ class rtmsghdrs(Packet):
 SOL_NETLINK = 270
 NETLINK_EXT_ACK = 11
 NETLINK_GET_STRICT_CHK = 12
+SIOCGIFFLAGS = 0x8913
 
 
 def _sr1_rtrequest(pkt: Packet) -> List[Packet]:
@@ -720,16 +723,21 @@ def _sr1_rtrequest(pkt: Packet) -> List[Packet]:
     except OSError:
         # Linux 4.12+ only
         pass
-    sock.bind((0, 0))  # bind to kernel
+    try:
+        sock.bind((0, 0))  # bind to kernel
+    except PermissionError:
+        # Android denies bind() to apps. The kernel autobinds the socket on
+        # the first send() instead.
+        log_loading.debug("RTNETLINK bind() denied: using an unbound socket")
     try:
         sock.setsockopt(SOL_NETLINK, NETLINK_GET_STRICT_CHK, 1)
     except OSError:
         # Linux 4.20+ only
         pass
-    # Request routes
-    sock.send(bytes(rtmsghdrs(msgs=[pkt])))
     results: List[Packet] = []
     try:
+        # Request routes
+        sock.send(bytes(rtmsghdrs(msgs=[pkt])))
         while True:
             msgs = rtmsghdrs(sock.recv(65535))
             if not msgs:
@@ -749,6 +757,12 @@ def _sr1_rtrequest(pkt: Packet) -> List[Packet]:
                             return []
                     return results
                 results.append(msg)
+    except PermissionError:
+        # Android denies some requests to apps, such as RTM_GETLINK
+        log_loading.debug(
+            "RTNETLINK %s denied", pkt.sprintf("%nlmsg_type%")
+        )
+        return []
     finally:
         sock.close()
 
@@ -835,6 +849,33 @@ def _get_if_list():
                 "type": itype,
                 "ips": ips,
             }
+    if not results:
+        # Android denies RTM_GETLINK to apps: rebuild the list from the
+        # interfaces that have an address. Their MAC address is not available.
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            for ifindex, ips in lifips.items():
+                try:
+                    ifname = socket.if_indextoname(ifindex)
+                    ifreq = ioctl(
+                        sock, SIOCGIFFLAGS, struct.pack("16s16x", ifname.encode())
+                    )
+                except OSError as ex:
+                    log_loading.debug(
+                        "Could not read interface %s: %s", ifindex, ex
+                    )
+                    continue
+                interfaces[ifindex] = {
+                    "name": ifname,
+                    "index": ifindex,
+                    "flags": FlagValue(
+                        struct.unpack_from("16xH", ifreq)[0], _iff_flags
+                    ),
+                    "mac": "00:00:00:00:00:00",
+                    "ips": ips,
+                }
+        finally:
+            sock.close()
     return interfaces
 
 
@@ -864,7 +905,11 @@ def _read_routes(af_family):
     Read routes using a NETLINK socket.
     """
     results = []
-    for rttable in ["RT_TABLE_LOCAL", "RT_TABLE_MAIN"]:
+    rttables = ["RT_TABLE_LOCAL", "RT_TABLE_MAIN"]
+    if ANDROID:
+        # Android keeps its default routes in one table per network
+        rttables = ["RT_TABLE_UNSPEC"]
+    for rttable in rttables:
         results.extend(
             _sr1_rtrequest(
                 rtmsghdr(
@@ -883,6 +928,30 @@ def _read_routes(af_family):
     return [msg for msg in results if msg.nlmsg_type == 24]  # RTM_NEWROUTE
 
 
+def _android_default_src(af_family):
+    # type: (socket.AddressFamily) -> Optional[str]
+    """
+    Return the source address the kernel uses to reach the Internet.
+
+    Android keeps a default route per network and selects one with policy
+    routing rules, which apps cannot read. connect() on a UDP socket only
+    performs the route lookup: no packet is sent.
+    """
+    sock = socket.socket(af_family, socket.SOCK_DGRAM)
+    try:
+        # Documentation addresses (RFC 5737 and RFC 3849)
+        if af_family == socket.AF_INET:
+            sock.connect(("192.0.2.1", 9))
+        else:
+            sock.connect(("2001:db8::1", 9))
+        return sock.getsockname()[0]  # type: ignore
+    except OSError:
+        # No network is available
+        return None
+    finally:
+        sock.close()
+
+
 def read_routes():
     # type: () -> List[Tuple[int, int, str, str, str, int]]
     """
@@ -899,6 +968,7 @@ def read_routes():
         net = 0
         mask = itom(msg.rtm_dst_len)
         gw = "0.0.0.0"
+        index = 0
         iface = ""
         addr = "0.0.0.0"
         metric = 0
@@ -917,7 +987,31 @@ def read_routes():
                 metric = attr.rta_data
             elif attr.rta_type == 0x07:  # RTA_PREFSRC
                 addr = attr.rta_data
+        if addr == "0.0.0.0" and gw == "0.0.0.0" and index in ifaces:
+            # Direct route without a preferred source, such as the default
+            # route of a point-to-point link: use the interface address
+            addr = next(
+                (
+                    x["address"]
+                    for x in ifaces[index]["ips"]
+                    if x["af_family"] == socket.AF_INET
+                ),
+                addr,
+            )
         routes.append((net, mask, gw, iface, addr, metric))
+    if ANDROID:
+        # Prefer the default route of the network currently in use
+        src = _android_default_src(socket.AF_INET)
+        src_ifaces = [
+            x["name"] for x in ifaces.values()
+            if any(ip["address"] == src for ip in x["ips"])
+        ]
+        routes = [
+            (net, mask, gw, iface, addr, metric + 1)
+            if mask == 0 and iface not in src_ifaces
+            else (net, mask, gw, iface, addr, metric)
+            for net, mask, gw, iface, addr, metric in routes
+        ]
     # Add multicast routes, as those are missing by default
     for _iface in ifaces.values():
         if _iface['flags'].MULTICAST:
@@ -972,6 +1066,19 @@ def read_routes6():
         cset = scapy.utils6.construct_source_candidate_set(prefix, plen, devaddrs)
         if cset:
             routes.append((prefix, plen, nh, iface, cset, metric))
+    if ANDROID:
+        # Prefer the default route of the network currently in use
+        src = _android_default_src(socket.AF_INET6)
+        src_ifaces = [
+            x["name"] for x in ifaces.values()
+            if any(ip["address"] == src for ip in x["ips"])
+        ]
+        routes = [
+            (prefix, plen, nh, iface, cset, metric + 1)
+            if plen == 0 and iface not in src_ifaces
+            else (prefix, plen, nh, iface, cset, metric)
+            for prefix, plen, nh, iface, cset, metric in routes
+        ]
     # Add multicast routes, as those are missing by default
     for _iface in ifaces.values():
         if _iface['flags'].MULTICAST:

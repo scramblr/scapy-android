@@ -11,6 +11,7 @@ from sys import byteorder, platform, maxsize
 import platform as platform_lib
 
 __all__ = [
+    "ANDROID",
     "LINUX",
     "OPENBSD",
     "FREEBSD",
@@ -24,7 +25,9 @@ __all__ = [
     "BIG_ENDIAN",
 ]
 
-LINUX = platform.startswith("linux")
+# Python 3.13+ reports "android" on Android (PEP 738), which runs a Linux kernel
+ANDROID = platform.startswith("android")
+LINUX = platform.startswith("linux") or ANDROID
 OPENBSD = platform.startswith("openbsd")
 FREEBSD = "freebsd" in platform
 NETBSD = platform.startswith("netbsd")

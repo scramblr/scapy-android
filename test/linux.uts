@@ -413,3 +413,186 @@ assert all(Dot1Q in x for x in results)
 conf.ifaces.reload()
 conf.route.resync()
 conf.route6.resync()
+
++ Android support
+
+= RTNETLINK requests without bind() permission
+~ linux
+
+import socket
+from unittest import mock
+from scapy.arch.linux import rtnetlink
+from scapy.arch.linux.rtnetlink import ifinfomsg, rtmsghdr
+
+def _test_unbound(send_error):
+    sock = mock.MagicMock()
+    sock.bind.side_effect = PermissionError(13, "Permission denied")
+    sock.send.side_effect = send_error
+    sock.recv.return_value = bytes(rtmsghdr(nlmsg_type="NLMSG_DONE"))
+    with mock.patch("scapy.arch.linux.rtnetlink.socket.socket", return_value=sock):
+        res = rtnetlink._sr1_rtrequest(rtmsghdr(nlmsg_type="RTM_GETLINK") / ifinfomsg())
+    return sock, res
+
+# bind() denied: the request is still sent
+sock, res = _test_unbound(None)
+assert res == []
+assert sock.send.called and sock.close.called
+
+# The request itself is denied
+sock, res = _test_unbound(PermissionError(13, "Permission denied"))
+assert res == []
+assert sock.close.called and not sock.recv.called
+
+= Interfaces list without RTM_GETLINK
+~ linux
+
+import socket
+import struct
+from unittest import mock
+from scapy.arch.linux import rtnetlink
+
+ips = {15: [{"af_family": socket.AF_INET, "index": 15, "address": "100.64.0.2"}]}
+# IFF_UP | IFF_RUNNING | IFF_MULTICAST
+ifreq = struct.pack("16sH14x", b"rmnet1", 0x1041)
+with mock.patch("scapy.arch.linux.rtnetlink._sr1_rtrequest", return_value=[]), \
+        mock.patch("scapy.arch.linux.rtnetlink._get_ips", return_value=ips), \
+        mock.patch("scapy.arch.linux.rtnetlink.socket.if_indextoname",
+                   return_value="rmnet1"), \
+        mock.patch("scapy.arch.linux.rtnetlink.ioctl", return_value=ifreq):
+    ifaces = rtnetlink._get_if_list()
+
+assert list(ifaces) == [15]
+assert ifaces[15]["name"] == "rmnet1"
+assert ifaces[15]["flags"].UP and ifaces[15]["flags"].MULTICAST
+assert ifaces[15]["ips"] == ips[15]
+
+= Android routing tables and default routes
+~ linux
+
+import socket
+from unittest import mock
+from scapy.arch.common import _iff_flags
+from scapy.arch.linux import rtnetlink
+from scapy.arch.linux.rtnetlink import rtmsg, rtmsg_rtattr, rtmsghdr
+from scapy.fields import FlagValue
+
+# All the routing tables are requested
+with mock.patch("scapy.arch.linux.rtnetlink.ANDROID", True), \
+        mock.patch("scapy.arch.linux.rtnetlink._sr1_rtrequest",
+                   return_value=[]) as mock_rtrequest:
+    result = rtnetlink._read_routes(socket.AF_INET)
+
+assert result == []
+assert mock_rtrequest.call_count == 1
+assert mock_rtrequest.call_args[0][0][rtmsg].data[0].rta_data == 0  # RT_TABLE_UNSPEC
+
+# The default route of the interface in use is preferred, and gets its address
+ifaces = {
+    2: {"name": "dummy0", "index": 2, "flags": FlagValue(0x41, _iff_flags),
+        "ips": []},
+    15: {"name": "rmnet1", "index": 15, "flags": FlagValue(0x41, _iff_flags),
+         "ips": [{"af_family": socket.AF_INET, "index": 15,
+                  "address": "100.64.0.2"}]},
+}
+routes = [
+    rtmsghdr(nlmsg_type="RTM_NEWROUTE") / rtmsg(
+        rtm_family=socket.AF_INET,
+        data=[rtmsg_rtattr(rta_type="RTS_OIF", rta_data=oif)],
+    )
+    for oif in [2, 15]
+]
+with mock.patch("scapy.arch.linux.rtnetlink.ANDROID", True), \
+        mock.patch("scapy.arch.linux.rtnetlink._get_if_list", return_value=ifaces), \
+        mock.patch("scapy.arch.linux.rtnetlink._read_routes", return_value=routes), \
+        mock.patch("scapy.arch.linux.rtnetlink._android_default_src",
+                   return_value="100.64.0.2"):
+    result = rtnetlink.read_routes()
+
+assert (0, 0, "0.0.0.0", "dummy0", "0.0.0.0", 1) in result
+assert (0, 0, "0.0.0.0", "rmnet1", "100.64.0.2", 0) in result
+
+= L3PingSocket
+~ linux
+
+import socket
+import struct
+from unittest import mock
+from scapy.arch.linux import L3PingSocket
+
+sock = mock.MagicMock()
+with mock.patch("scapy.arch.linux.socket.socket", return_value=sock):
+    s = L3PingSocket()
+
+# Only ICMP echo requests can be sent
+for pkt in [IP(dst="192.0.2.1") / TCP(), IP(dst="192.0.2.1") / ICMP(type=13)]:
+    try:
+        s.send(pkt)
+        assert False
+    except Scapy_Exception:
+        pass
+
+req = IP(dst="192.0.2.1", ttl=12) / ICMP(id=4242, seq=7) / b"scapy"
+s.send(req)
+sock.bind.assert_called_once_with(("", 4242))
+sock.setsockopt.assert_any_call(socket.IPPROTO_IP, socket.IP_TTL, 12)
+assert sock.sendto.call_args[0] == (bytes(req[ICMP]), ("192.0.2.1", 0))
+
+# Only one identifier per socket
+try:
+    s.send(IP(dst="192.0.2.1") / ICMP(id=1))
+    assert False
+except Scapy_Exception:
+    pass
+
+# The reply gets the identifier back (the kernel used 1234)
+sock.recvmsg.return_value = (
+    bytes(ICMP(type="echo-reply", id=1234, seq=7) / b"scapy"),
+    [(socket.IPPROTO_IP, socket.IP_TTL, struct.pack("i", 57))],
+    0,
+    ("192.0.2.1", 1234),
+)
+rep = s.recv()
+assert rep[IP].src == "192.0.2.1" and rep[IP].ttl == 57
+assert rep[ICMP].id == 4242 and rep[ICMP].seq == 7
+assert rep.answers(req)
+s.close()
+
+# The kernel chooses the identifier when binding to it is not allowed
+sock = mock.MagicMock()
+sock.bind.side_effect = [PermissionError(13, "Permission denied"), None]
+with mock.patch("scapy.arch.linux.socket.socket", return_value=sock):
+    s = L3PingSocket()
+
+s.send(IP(dst="192.0.2.1") / ICMP(id=4242))
+assert sock.bind.call_args_list == [mock.call(("", 4242)), mock.call(("", 0))]
+s.close()
+
+= Android sockets without root privileges
+~ linux
+
+import socket
+from unittest import mock
+from scapy.arch.linux import L3PingSocket, NotAvailablePacketSocket
+from scapy.config import _set_conf_sockets
+
+real_socket = socket.socket
+
+def _socket(family=-1, *args, **kwargs):
+    if family == socket.AF_PACKET:
+        raise PermissionError(13, "Permission denied")
+    return real_socket(family, *args, **kwargs)
+
+try:
+    with mock.patch("scapy.config.ANDROID", True), \
+            mock.patch("scapy.config.socket.socket", side_effect=_socket):
+        _set_conf_sockets()
+        assert conf.L3socket is L3PingSocket
+        assert conf.L2socket is NotAvailablePacketSocket
+        assert conf.L2listen is NotAvailablePacketSocket
+    try:
+        conf.L2listen()
+        assert False
+    except Scapy_Exception:
+        pass
+finally:
+    _set_conf_sockets()

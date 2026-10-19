@@ -28,7 +28,7 @@ import importlib.util
 import scapy
 from scapy import VERSION
 from scapy.base_classes import BasePacket
-from scapy.consts import DARWIN, WINDOWS, LINUX, BSD, SOLARIS
+from scapy.consts import ANDROID, DARWIN, WINDOWS, LINUX, BSD, SOLARIS
 from scapy.error import (
     log_loading,
     log_scapy,
@@ -871,6 +871,22 @@ def _set_conf_sockets():
         )
         conf.L2socket = L2Socket
         conf.L2listen = L2ListenSocket
+        if ANDROID:
+            try:
+                socket.socket(socket.AF_PACKET, socket.SOCK_RAW).close()
+            except PermissionError:
+                # Android apps without root cannot open packet sockets
+                from scapy.arch.linux import (
+                    L3PingSocket,
+                    NotAvailablePacketSocket,
+                )
+                conf.L3socket = L3PingSocket
+                conf.L3socket6 = NotAvailablePacketSocket
+                conf.L2socket = NotAvailablePacketSocket
+                conf.L2listen = NotAvailablePacketSocket
+                log_loading.info(
+                    "No root privileges: only ICMP echo requests can be sent"
+                )
     elif WINDOWS:
         from scapy.arch.windows import _NotAvailableSocket
         from scapy.arch.windows.native import L3WinSocket, L3WinSocket6

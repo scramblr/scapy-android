@@ -378,9 +378,9 @@ def get_working_if():
     # type: () -> Optional[NetworkInterface]
     """Return an interface that works"""
     # return the interface associated with the route with smallest
-    # mask (route by default if it exists)
+    # mask (route by default if it exists), using metrics as a tie-breaker
     routes = conf.route.routes[:]
-    routes.sort(key=lambda x: x[1])
+    routes.sort(key=lambda x: (x[1], x[5]))
     ifaces = (x[3] for x in routes)
     # First check the routing ifaces from best to worse,
     # then check all the available ifaces as backup.

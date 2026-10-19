@@ -112,6 +112,9 @@ PACKET_AUXDATA = 8
 PACKET_FASTROUTE = 6  # Fastrouted frame
 # Unused, PACKET_FASTROUTE and PACKET_LOOPBACK are invisible to user space
 
+# From in.h (not exported by the socket module)
+IP_RECVTTL = 12
+
 
 # Utils
 
@@ -412,6 +415,111 @@ class L3PacketSocket(L2Socket):
         for fd in self.send_socks.values():
             if fd is not self:
                 fd.close()
+
+
+class L3PingSocket(SuperSocket):
+    """
+    Send ICMP echo requests and receive their replies without privileges,
+    using Linux ping sockets (allowed by net.ipv4.ping_group_range).
+
+    The kernel builds the IP header, computes the ICMP checksum and replaces
+    the ICMP identifier with the port of the socket. This socket therefore
+    binds to the identifier of the first packet sent (or lets the kernel
+    choose one when it is not allowed), and only sends that identifier.
+    Replies get it back, so that sr() can match them.
+    """
+    desc = "send/receive ICMP echo at layer 3 using unprivileged ping sockets"
+
+    def __init__(self,
+                 iface=None,  # type: Optional[_GlobInterfaceType]
+                 promisc=None,  # type: Optional[Any]
+                 filter=None,  # type: Optional[Any]
+                 nofilter=0,  # type: int
+                 **kwargs  # type: Any
+                 ):
+        # type: (...) -> None
+        self.ins = socket.socket(
+            socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_ICMP
+        )
+        self.outs = self.ins
+        self.iface = iface or conf.iface
+        self.promisc = False
+        self.icmp_id = None  # type: Optional[int]
+        if filter is not None:
+            log_runtime.info("Ping sockets do not support BPF filters")
+        self.ins.setsockopt(socket.IPPROTO_IP, IP_RECVTTL, 1)
+
+    def send(self, x):
+        # type: (Packet) -> int
+        # Imported here to avoid a circular import with scapy.layers.l2
+        from scapy.layers.inet import ICMP, IP
+        if not isinstance(x, IP) or not isinstance(x.payload, ICMP) or \
+                x.payload.type != 8 or x.payload.code != 0:
+            raise Scapy_Exception(
+                "Without root privileges, only IP()/ICMP() echo requests can "
+                "be sent (unprivileged ping sockets): got %s" % x.summary()
+            )
+        icmp = x.payload
+        if self.icmp_id is None:
+            # Binding to 0 lets the kernel choose the identifier
+            try:
+                self.ins.bind(("", icmp.id))
+            except PermissionError:
+                # Android only lets apps bind to the ephemeral port range
+                log_runtime.info(
+                    "Cannot send ICMP id %d: the kernel chooses the identifier, "
+                    "replies show id %d", icmp.id, icmp.id
+                )
+                self.ins.bind(("", 0))
+            self.icmp_id = icmp.id
+        elif icmp.id != self.icmp_id:
+            raise Scapy_Exception(
+                "This ping socket sends ICMP id %d: use another socket to "
+                "send id %d" % (self.icmp_id, icmp.id)
+            )
+        if x.src != conf.route.route(x.dst, verbose=0)[1]:
+            warning("The kernel sets the source address of ping sockets: "
+                    "%s is ignored", x.src)
+        self.ins.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, x.ttl)
+        self.ins.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, x.tos)
+        x.sent_time = time.time()
+        return self.ins.sendto(bytes(icmp), (x.dst, 0))
+
+    def recv(self, x=MTU, **kwargs):
+        # type: (int, **Any) -> Optional[Packet]
+        # Imported here to avoid a circular import with scapy.layers.l2
+        from scapy.layers.inet import ICMP, IP
+        data, ancdata, _, sa = self.ins.recvmsg(x, socket.CMSG_SPACE(4))
+        ttl = 0
+        for cmsg_level, cmsg_type, cmsg_data in ancdata:
+            if cmsg_level == socket.IPPROTO_IP and cmsg_type == socket.IP_TTL:
+                ttl = struct.unpack("i", cmsg_data)[0]
+        icmp = ICMP(data)
+        if self.icmp_id is not None:
+            # Restore the identifier replaced by the kernel. The checksum
+            # is computed again.
+            icmp.id = self.icmp_id
+            del icmp.chksum
+        # The kernel only returns the ICMP message: rebuild the IP header
+        ip = IP(
+            src=sa[0],
+            dst=conf.route.route(sa[0], verbose=0)[1],
+            ttl=ttl,
+            proto=socket.IPPROTO_ICMP,
+        )
+        return IP(bytes(ip / icmp), **kwargs)
+
+
+class NotAvailablePacketSocket(SuperSocket):
+    desc = "packet sockets are not available without root privileges"
+
+    def __init__(self, *args, **kargs):
+        # type: (*Any, **Any) -> None
+        raise Scapy_Exception(
+            "Sniffing and sending raw packets need root privileges (packet "
+            "sockets). Without root, only IPv4 ICMP echo requests can be "
+            "sent, using conf.L3socket (L3PingSocket)"
+        )
 
 
 class VEthPair(object):
