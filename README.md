@@ -1,106 +1,172 @@
 <!-- start_ppi_description -->
 
-# <img src="https://github.com/secdev/scapy/raw/master/doc/scapy/graphics/scapy_logo.png" width="64" valign="middle" alt="Scapy" />&nbsp;&nbsp; Scapy
+# scapy-android v1.0b - Scapy For Android
 
-[![Scapy unit tests](https://github.com/secdev/scapy/actions/workflows/unittests.yml/badge.svg?branch=master&event=push)](https://github.com/secdev/scapy/actions/workflows/unittests.yml?query=event%3Apush) <!-- ignore_ppi -->
-[![Codecov Status](https://codecov.io/gh/secdev/scapy/branch/master/graph/badge.svg)](https://codecov.io/gh/secdev/scapy) <!-- ignore_ppi -->
-[![Codacy Badge](https://api.codacy.com/project/badge/Grade/30ee6772bb264a689a2604f5cdb0437b)](https://app.codacy.com/gh/secdev/scapy/dashboard) <!-- ignore_ppi -->
-[![PyPI Version](https://img.shields.io/pypi/v/scapy.svg)](https://pypi.python.org/pypi/scapy/)
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](LICENSE)
-[![Join the chat at https://gitter.im/secdev/scapy](https://badges.gitter.im/secdev/scapy.svg)](https://gitter.im/secdev/scapy) <!-- ignore_ppi -->
+[![Based on Scapy 2.8.0](https://img.shields.io/badge/based%20on-Scapy%202.8.0-informational.svg)](https://github.com/secdev/scapy)
 
-Scapy is a powerful Python-based interactive packet manipulation program and
-library.
+**scapy-android** is a fork of [Scapy](https://github.com/secdev/scapy), the
+Python packet manipulation program and library, that runs on Android in
+[Termux](https://termux.dev), **without root**.
 
-It is able to forge or decode packets of a wide number of protocols, send them
-on the wire, capture them, store or read them using pcap files, match requests
-and replies, and much more. It is designed to allow fast packet prototyping by
-using default values that work.
+Upstream Scapy stops on Android with:
 
-It can easily handle most classical tasks like scanning, tracerouting, probing,
-unit tests, attacks or network discovery (it can replace `hping`, 85% of `nmap`,
-`arpspoof`, `arp-sk`, `arping`, `tcpdump`, `wireshark`, `p0f`, etc.). It also
-performs very well at a lot of other specific tasks that most other tools can't
-handle, like sending invalid frames, injecting your own 802.11 frames, combining
-techniques (VLAN hopping+ARP cache poisoning, VoIP decoding on WEP protected
-channel, ...), etc.
-
-Scapy supports Python 3.7+. It's intended to
-be cross platform, and runs on many different platforms (Linux, OSX,
-\*BSD, and Windows).
-
-## Getting started
-
-Scapy is usable either as a **shell** or as a **library**.
-For further details, please head over to [Getting started with Scapy](https://scapy.readthedocs.io/en/latest/introduction.html), which is part of the documentation.
-
-### Shell demo
-
-![Scapy install demo](https://secdev.github.io/files/doc/animation-scapy-install.svg)
-
-Scapy can easily be used as an interactive shell to interact with the network.
-The following example shows how to send an ICMP Echo Request message to
-`github.com`, then display the reply source IP address:
-
-```python
-sudo ./run_scapy
-Welcome to Scapy
->>> p = IP(dst="github.com")/ICMP()
->>> r = sr1(p)
-Begin emission:
-.Finished to send 1 packets.
-*
-Received 2 packets, got 1 answers, remaining 0 packets
->>> r[IP].src
-'192.30.253.113'
+```
+CRITICAL: Scapy currently does not support android! I/O will NOT work!
 ```
 
-### Resources
+scapy-android removes that error and adapts Scapy to the restrictions Android
+applies to apps. Packet building, dissection and pcap files work as on any
+other system, and ICMP echo (ping) requests can be sent and matched with their
+replies through `sr()` and `sr1()`, without root.
 
-The [documentation](https://scapy.readthedocs.io/en/latest/) contains more
-advanced use cases, and examples.
+> This is an unofficial fork. It is not affiliated with or endorsed by the
+> Scapy project. For Scapy on other platforms, use
+> [secdev/scapy](https://github.com/secdev/scapy).
 
-Other useful resources:
+## Why upstream Scapy does not work on Android
 
--   [Scapy in 20 minutes](https://github.com/secdev/scapy/blob/master/doc/notebooks/Scapy%20in%2015%20minutes.ipynb)
--   [Interactive tutorial](https://scapy.readthedocs.io/en/latest/usage.html#interactive-tutorial) (part of the documentation)
--   [The quick demo: an interactive session](https://scapy.readthedocs.io/en/latest/introduction.html#quick-demo) (some examples may be outdated)
--   [HTTP/2 notebook](https://github.com/secdev/scapy/blob/master/doc/notebooks/HTTP_2_Tuto.ipynb)
--   [TLS notebooks](https://github.com/secdev/scapy/blob/master/doc/notebooks/tls)
+- Since Python 3.13 ([PEP 738](https://peps.python.org/pep-0738/)),
+  `sys.platform` is `"android"` instead of `"linux"`, so Scapy does not load
+  its Linux backend.
+- Android apps cannot open packet sockets or raw sockets, which Scapy uses to
+  send and capture packets.
+- Android apps cannot `bind()` route netlink sockets or list interfaces with
+  `RTM_GETLINK`, which Scapy uses to read the network configuration.
+- Android keeps its default routes in one routing table per network, not in
+  the main table that Scapy reads.
 
-## [Installation](https://scapy.readthedocs.io/en/latest/installation.html)
+## What works
 
-Scapy works without any external Python modules on Linux and BSD like operating
-systems. On Windows, you need to install some mandatory dependencies as
-described in [the
-documentation](http://scapy.readthedocs.io/en/latest/installation.html#windows).
+| Feature | Without root | With root |
+|---|---|---|
+| Interactive shell and library | yes | yes |
+| Building and dissecting packets, `wrpcap()` / `rdpcap()` | yes | yes |
+| Interfaces (`conf.ifaces`) and routes (`conf.route`, `conf.route6`) | yes (no MAC addresses) | expected (not verified yet) |
+| `sr()` / `sr1()` / `send()` of IPv4 ICMP echo requests | yes | expected (not verified yet) |
+| TCP, UDP, other ICMP types, crafted IP headers | no: needs root | expected (not verified yet) |
+| `sniff()`, layer 2 | no: needs root | expected (not verified yet) |
 
-On most systems, using Scapy is as simple as running the following commands:
+Without root, sending is limited to what Linux "ping sockets" allow: IPv4 ICMP
+echo requests, with the source address and IP header set by the kernel. Other
+packets stop with an explicit error:
+
+```
+Scapy_Exception: Without root privileges, only IP()/ICMP() echo requests can be sent (unprivileged ping sockets)
+```
+
+Sending a TCP SYN needs a raw socket whatever the destination port: the
+`< 1024` privileged ports rule only applies to listening on a port.
+
+## Quick start (Termux)
 
 ```bash
-git clone https://github.com/secdev/scapy
-cd scapy
+pkg install python git
+git clone https://github.com/scramblr/scapy-android
+cd scapy-android
 ./run_scapy
 ```
 
-To benefit from all Scapy features, such as plotting, you might want to install
-Python modules, such as `matplotlib` or `cryptography`. See the
-[documentation](http://scapy.readthedocs.io/en/latest/installation.html) and
-follow the instructions to install them.
+```python
+>>> r = sr1(IP(dst="1.1.1.1")/ICMP(), timeout=2)
+>>> r.summary()
+'IP / ICMP 1.1.1.1 > 100.64.0.2 echo-reply 0'
+>>> ans, unans = sr(IP(dst="8.8.8.8")/ICMP(seq=(1, 3))/b"hello", timeout=2)
+>>> ans.summary()
+>>> conf.ifaces
+>>> conf.route
+```
+
+### Using it as a library
+
+Run your scripts with the clone on the Python path. This also takes precedence
+over a Scapy installed with `pip`:
+
+```bash
+PYTHONPATH=~/scapy-android python my_script.py
+```
+
+```python
+from scapy.all import IP, ICMP, sr1
+
+reply = sr1(IP(dst="1.1.1.1") / ICMP(), timeout=2, verbose=0)
+print(reply.summary() if reply else "no reply")
+```
+
+To check which copy is used:
+
+```bash
+PYTHONPATH=~/scapy-android python -c "import scapy; print(scapy.__file__)"
+```
 
 <!-- stop_ppi_description -->
 
-## Packaging status
+## Differences from upstream Scapy
 
-[![Packaging status](https://repology.org/badge/vertical-allrepos/scapy.svg?columns=4&exclude_unsupported=1&header=
-)](https://repology.org/project/scapy/versions)
+| Area | Change |
+|---|---|
+| Platform | Android (`sys.platform == "android"`) is handled as Linux (`scapy/consts.py`). |
+| Network configuration | Unbound netlink socket when `bind()` is denied; interfaces built from their addresses when `RTM_GETLINK` is denied; all routing tables read on Android; the default route of the network in use is preferred (`scapy/arch/linux/rtnetlink.py`). |
+| Routes | Direct routes without a preferred source use the interface address. `get_working_if()` uses route metrics as a tie-breaker (`scapy/interfaces.py`). |
+| Sockets | New `L3PingSocket` for unprivileged ICMP echo, and `NotAvailablePacketSocket` with an explicit error for layer 2 and sniffing (`scapy/arch/linux/__init__.py`), selected automatically without root (`scapy/config.py`). |
+| Tests | "Android support" tests in `test/linux.uts`. |
 
-## License
+Outside Android, only the two route changes above differ from upstream Scapy.
 
-Scapy's code, tests and tools are licensed under GPL v2.
-The documentation (everything unless marked otherwise in `doc/`, and except the logo) is licensed under CC BY-NC-SA 2.5.
+[ANDROID.md](ANDROID.md) has the details: the Android restrictions measured on
+a device, the changes, and the roadmap.
+
+## Tested on
+
+| | |
+|---|---|
+| Device | Google Pixel 7 Pro, unrooted |
+| Android | 17 (SDK 37), SELinux enforcing |
+| Termux | 0.118.3 |
+| Python | 3.14 |
+
+Reports from other devices and Android versions are welcome in the issues.
+
+## Roadmap
+
+- ICMP echo to the loopback address (`127.0.0.1`) without root
+- IPv6 ICMP echo with ICMPv6 ping sockets
+- Traceroute, by reading ICMP errors (`IP_RECVERR`)
+- DNS servers from Termux's `resolv.conf`
+- Verification on rooted devices (Android 11 and older)
+- Wi-Fi and mobile data connected at the same time
+
+See [ANDROID.md](ANDROID.md#roadmap) for the current status.
+
+## Running the tests
+
+In Termux, from the clone:
+
+```bash
+PYTHONPATH=. python scapy/tools/UTscapy.py -t test/linux.uts -K needs_root -K netaccess -f text
+```
+
+## Learning Scapy
+
+Everything that does not send or capture packets works as in upstream Scapy,
+so its documentation applies:
+
+- [Scapy documentation](https://scapy.readthedocs.io/en/latest/)
+- [Interactive tutorial](https://scapy.readthedocs.io/en/latest/usage.html#interactive-tutorial)
+- [Scapy in 15 minutes](https://github.com/secdev/scapy/blob/master/doc/notebooks/Scapy%20in%2015%20minutes.ipynb)
+
+## License and credits
+
+scapy-android is based on [Scapy](https://github.com/secdev/scapy), created by
+Philippe Biondi and developed by the Scapy community.
+
+The code, tests and tools are licensed under GPL v2, like Scapy (see
+[LICENSE](LICENSE)). The documentation (everything unless marked otherwise in
+`doc/`, and except the logo) is licensed under CC BY-NC-SA 2.5.
 
 ## Contributing
 
-Want to contribute? Great! Please take a few minutes to
-[read this](CONTRIBUTING.md)!
+Issues and pull requests about Android support are welcome on this
+repository. Changes that are not specific to Android belong in
+[upstream Scapy](https://github.com/secdev/scapy): see
+[CONTRIBUTING.md](CONTRIBUTING.md).
