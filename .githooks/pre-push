@@ -1,0 +1,6 @@
+#!/bin/sh
+# pii-guard: refuse personal data in the commits being pushed (see ANDROID.md)
+for PY in python3 python; do
+  "$PY" -c "" 2>/dev/null && break
+done
+exec "$PY" "$(git rev-parse --show-toplevel)/.config/pii-guard/pii_guard.py" --pre-push "$1"

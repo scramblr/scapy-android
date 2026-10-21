@@ -1,0 +1,39 @@
+# Flag personal data in pushed commits, including edits made on github.com
+# (which local git hooks cannot see). See ANDROID.md.
+name: pii-guard
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch upstream Scapy (its commits are not scanned)
+        run: |
+          git remote add upstream https://github.com/secdev/scapy.git
+          git fetch --no-tags --quiet upstream master
+          git config pii-guard.upstream upstream
+      - name: Scan the new commits for personal data
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            RANGE="$PR_BASE..$PR_HEAD"
+          elif [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            RANGE="$AFTER~1..$AFTER"
+          else
+            RANGE="$BEFORE..$AFTER"
+          fi
+          python3 .config/pii-guard/pii_guard.py --range "$RANGE"

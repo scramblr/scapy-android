@@ -93,3 +93,60 @@ Copy the `scapy/` package and `test/` to Termux, then:
 PYTHONPATH=. python -c "from scapy.all import *; print(sr1(IP(dst='1.1.1.1')/ICMP(), timeout=2))"
 PYTHONPATH=. python scapy/tools/UTscapy.py -t test/linux.uts -K needs_root -K netaccess -f text
 ```
+
+## Personal data guard
+
+Commits and pushes are checked for personal data by
+`.config/pii-guard/pii_guard.py`. It runs as git hooks on the developer's
+machine, and as a GitHub check on every push.
+
+Enable the hooks once per clone:
+
+```console
+git config core.hooksPath .githooks
+git config pii-guard.upstream origin
+```
+
+What is refused, unless allowed explicitly:
+
+- device serial numbers (`adb devices` lines), IMEI, IMSI, ICCID and phone
+  numbers;
+- MAC addresses past the vendor prefix (the first 3 bytes): write them as `aa:bb:cc:00:00:00`;
+- public and carrier IP addresses. Documentation ranges (`192.0.2.0/24`,
+  `2001:db8::/32`), `100.64.0.0/24` placeholders and public DNS resolvers are
+  fine;
+- GPS coordinates, Wi-Fi names (SSIDs), Android and advertising IDs;
+- values and networks listed privately (see below).
+
+Carrier names are allowed, with a reminder to check that disclosing them is
+appropriate.
+
+Obfuscate values by keeping at most the first 4 characters, then obvious
+filler: `0000`, `1111` or `31337`.
+
+To allow a finding on purpose, add `pii-allow` on the line, or run the command
+with `PII_ALLOW=1`.
+
+### Private values
+
+Values specific to one person (a device serial, a home network) are stored as
+salted SHA-256 hashes in `~/.config/pii-guard/private.json`, outside the
+repository:
+
+```console
+python .config/pii-guard/pii_guard.py --add                  # prompted, not echoed
+python .config/pii-guard/pii_guard.py --add-network NETWORK REPLACEMENT
+```
+
+### Upstream Scapy
+
+Commits that exist in upstream Scapy (the remote named by
+`pii-guard.upstream`) are skipped, so syncing with upstream needs no override.
+For a merge, only the lines written to resolve conflicts are checked.
+
+### Edits on github.com
+
+Edits made on GitHub's website are public as soon as they are saved, before
+any check can run. The GitHub check reports them afterwards. If personal data
+reaches the repository, rewrite the history and recreate the repository,
+because the old commits stay reachable by their hash.
