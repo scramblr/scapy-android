@@ -7,24 +7,29 @@
 
 **scapy-android** is a fork of [Scapy](https://github.com/secdev/scapy), the
 Python packet manipulation program and library, that runs on Android in
-[Termux](https://termux.dev), **without root**.
+[Termux](https://termux.dev), **without root(!)** with admittedly less functionality
+for now. Stay tuned for future updates!
 
-Upstream Scapy stops on Android with:
+Typically, if someone were to use Termux to pip install scapy, they would be greeted
+with the following error, and then be dumped back to the shell:
 
 ```
 CRITICAL: Scapy currently does not support android! I/O will NOT work!
 ```
 
-scapy-android removes that error and adapts Scapy to the restrictions Android
-applies to apps. Packet building, dissection and pcap files work as on any
+Since we're fans of progress and things working, the decision was made to embark on
+the long road to eventual success, and so scapy-android was born. This project effectively
+removes that error, but more importantly, this project actually allows users to begin using
+scapy just like it was always intended: To craft, manipulate, and explore packets - including
+on our cellular phone! Packet building, dissection and pcap files work as on any
 other system, and ICMP echo (ping) requests can be sent and matched with their
 replies through `sr()` and `sr1()`, without root.
 
-> This is an unofficial fork. It is not affiliated with or endorsed by the
-> Scapy project. For Scapy on other platforms, use
-> [secdev/scapy](https://github.com/secdev/scapy).
+> NOTE: Currently, this is an unofficial fork which is not affiliated or endorsed by the
+> core Scapy project developers, but we welcome their feedback and collaboration in the future!
+> For Scapy on other platforms, use [secdev/scapy](https://github.com/secdev/scapy).
 
-## Why upstream Scapy does not work on Android
+## History Lesson: Why upstream Scapy used to not work on Android
 
 - Since Python 3.13 ([PEP 738](https://peps.python.org/pep-0738/)),
   `sys.platform` is `"android"` instead of `"linux"`, so Scapy does not load
@@ -36,7 +41,7 @@ replies through `sr()` and `sr1()`, without root.
 - Android keeps its default routes in one routing table per network, not in
   the main table that Scapy reads.
 
-## What works
+## What works and has been tested so far (in the first days of creation)
 
 | Feature | Without root | With root |
 |---|---|---|
