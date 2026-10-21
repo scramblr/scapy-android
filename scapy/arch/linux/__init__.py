@@ -495,6 +495,10 @@ class L3PingSocket(SuperSocket):
             if cmsg_level == socket.IPPROTO_IP and cmsg_type == socket.IP_TTL:
                 ttl = struct.unpack("i", cmsg_data)[0]
         icmp = ICMP(data)
+        if icmp.type != 0:
+            # The kernel only delivers echo replies to ping sockets
+            log_runtime.debug("Dropping unexpected ICMP type %d", icmp.type)
+            return None
         if self.icmp_id is not None:
             # Restore the identifier replaced by the kernel. The checksum
             # is computed again.

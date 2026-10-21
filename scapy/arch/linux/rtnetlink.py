@@ -737,7 +737,14 @@ def _sr1_rtrequest(pkt: Packet) -> List[Packet]:
     results: List[Packet] = []
     try:
         # Request routes
-        sock.send(bytes(rtmsghdrs(msgs=[pkt])))
+        try:
+            sock.send(bytes(rtmsghdrs(msgs=[pkt])))
+        except PermissionError:
+            # Android denies some requests to apps, such as RTM_GETLINK
+            log_loading.debug(
+                "RTNETLINK %s denied", pkt.sprintf("%nlmsg_type%")
+            )
+            return []
         while True:
             msgs = rtmsghdrs(sock.recv(65535))
             if not msgs:
@@ -757,12 +764,6 @@ def _sr1_rtrequest(pkt: Packet) -> List[Packet]:
                             return []
                     return results
                 results.append(msg)
-    except PermissionError:
-        # Android denies some requests to apps, such as RTM_GETLINK
-        log_loading.debug(
-            "RTNETLINK %s denied", pkt.sprintf("%nlmsg_type%")
-        )
-        return []
     finally:
         sock.close()
 
@@ -849,7 +850,7 @@ def _get_if_list():
                 "type": itype,
                 "ips": ips,
             }
-    if not results:
+    if ANDROID and not results:
         # Android denies RTM_GETLINK to apps: rebuild the list from the
         # interfaces that have an address. Their MAC address is not available.
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -999,15 +1000,17 @@ def read_routes():
                 addr,
             )
         routes.append((net, mask, gw, iface, addr, metric))
-    if ANDROID:
-        # Prefer the default route of the network currently in use
-        src = _android_default_src(socket.AF_INET)
+    src = _android_default_src(socket.AF_INET) if ANDROID else None
+    if src is not None:
+        # Prefer the default route of the network currently in use: the
+        # other default routes get a metric worse than all of them
         src_ifaces = [
             x["name"] for x in ifaces.values()
             if any(ip["address"] == src for ip in x["ips"])
         ]
+        worst = max((r[5] for r in routes if r[1] == 0), default=0)
         routes = [
-            (net, mask, gw, iface, addr, metric + 1)
+            (net, mask, gw, iface, addr, worst + 1)
             if mask == 0 and iface not in src_ifaces
             else (net, mask, gw, iface, addr, metric)
             for net, mask, gw, iface, addr, metric in routes
@@ -1066,15 +1069,17 @@ def read_routes6():
         cset = scapy.utils6.construct_source_candidate_set(prefix, plen, devaddrs)
         if cset:
             routes.append((prefix, plen, nh, iface, cset, metric))
-    if ANDROID:
-        # Prefer the default route of the network currently in use
-        src = _android_default_src(socket.AF_INET6)
+    src = _android_default_src(socket.AF_INET6) if ANDROID else None
+    if src is not None:
+        # Prefer the default route of the network currently in use: the
+        # other default routes get a metric worse than all of them
         src_ifaces = [
             x["name"] for x in ifaces.values()
             if any(ip["address"] == src for ip in x["ips"])
         ]
+        worst = max((r[5] for r in routes if r[1] == 0), default=0)
         routes = [
-            (prefix, plen, nh, iface, cset, metric + 1)
+            (prefix, plen, nh, iface, cset, worst + 1)
             if plen == 0 and iface not in src_ifaces
             else (prefix, plen, nh, iface, cset, metric)
             for prefix, plen, nh, iface, cset, metric in routes

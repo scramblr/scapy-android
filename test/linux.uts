@@ -454,13 +454,19 @@ from scapy.arch.linux import rtnetlink
 ips = {15: [{"af_family": socket.AF_INET, "index": 15, "address": "100.64.0.2"}]}
 # IFF_UP | IFF_RUNNING | IFF_MULTICAST
 ifreq = struct.pack("16sH14x", b"rmnet1", 0x1041)
-with mock.patch("scapy.arch.linux.rtnetlink._sr1_rtrequest", return_value=[]), \
-        mock.patch("scapy.arch.linux.rtnetlink._get_ips", return_value=ips), \
-        mock.patch("scapy.arch.linux.rtnetlink.socket.if_indextoname",
-                   return_value="rmnet1"), \
-        mock.patch("scapy.arch.linux.rtnetlink.ioctl", return_value=ifreq):
-    ifaces = rtnetlink._get_if_list()
+def _test_fallback(android):
+    with mock.patch("scapy.arch.linux.rtnetlink.ANDROID", android), \
+            mock.patch("scapy.arch.linux.rtnetlink._sr1_rtrequest", return_value=[]), \
+            mock.patch("scapy.arch.linux.rtnetlink._get_ips", return_value=ips), \
+            mock.patch("scapy.arch.linux.rtnetlink.socket.if_indextoname",
+                       return_value="rmnet1"), \
+            mock.patch("scapy.arch.linux.rtnetlink.ioctl", return_value=ifreq):
+        return rtnetlink._get_if_list()
 
+# The fallback is only used on Android
+assert _test_fallback(False) == {}
+
+ifaces = _test_fallback(True)
 assert list(ifaces) == [15]
 assert ifaces[15]["name"] == "rmnet1"
 assert ifaces[15]["flags"].UP and ifaces[15]["flags"].MULTICAST
@@ -494,22 +500,36 @@ ifaces = {
          "ips": [{"af_family": socket.AF_INET, "index": 15,
                   "address": "100.64.0.2"}]},
 }
+# The route in use has a worse metric than the other one
 routes = [
     rtmsghdr(nlmsg_type="RTM_NEWROUTE") / rtmsg(
         rtm_family=socket.AF_INET,
-        data=[rtmsg_rtattr(rta_type="RTS_OIF", rta_data=oif)],
+        data=[
+            rtmsg_rtattr(rta_type="RTS_OIF", rta_data=oif),
+            rtmsg_rtattr(rta_type="RTA_PRIORITY", rta_data=metric),
+        ],
     )
-    for oif in [2, 15]
+    for oif, metric in [(2, 0), (15, 5)]
 ]
-with mock.patch("scapy.arch.linux.rtnetlink.ANDROID", True), \
-        mock.patch("scapy.arch.linux.rtnetlink._get_if_list", return_value=ifaces), \
-        mock.patch("scapy.arch.linux.rtnetlink._read_routes", return_value=routes), \
-        mock.patch("scapy.arch.linux.rtnetlink._android_default_src",
-                   return_value="100.64.0.2"):
-    result = rtnetlink.read_routes()
 
-assert (0, 0, "0.0.0.0", "dummy0", "0.0.0.0", 1) in result
-assert (0, 0, "0.0.0.0", "rmnet1", "100.64.0.2", 0) in result
+def _test_default_routes(src):
+    with mock.patch("scapy.arch.linux.rtnetlink.ANDROID", True), \
+            mock.patch("scapy.arch.linux.rtnetlink._get_if_list",
+                       return_value=ifaces), \
+            mock.patch("scapy.arch.linux.rtnetlink._read_routes",
+                       return_value=routes), \
+            mock.patch("scapy.arch.linux.rtnetlink._android_default_src",
+                       return_value=src):
+        return rtnetlink.read_routes()
+
+result = _test_default_routes("100.64.0.2")
+assert (0, 0, "0.0.0.0", "dummy0", "0.0.0.0", 6) in result
+assert (0, 0, "0.0.0.0", "rmnet1", "100.64.0.2", 5) in result
+
+# The metrics are kept when the source address is unknown
+result = _test_default_routes(None)
+assert (0, 0, "0.0.0.0", "dummy0", "0.0.0.0", 0) in result
+assert (0, 0, "0.0.0.0", "rmnet1", "100.64.0.2", 5) in result
 
 = L3PingSocket
 ~ linux
@@ -555,6 +575,12 @@ rep = s.recv()
 assert rep[IP].src == "192.0.2.1" and rep[IP].ttl == 57
 assert rep[ICMP].id == 4242 and rep[ICMP].seq == 7
 assert rep.answers(req)
+
+# Anything else than an echo reply is dropped
+sock.recvmsg.return_value = (
+    bytes(ICMP(type="dest-unreach")), [], 0, ("192.0.2.1", 1234),
+)
+assert s.recv() is None
 s.close()
 
 # The kernel chooses the identifier when binding to it is not allowed
